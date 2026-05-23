@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trading Agent Web UI</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M4 18h16M5 15l4-4 4 3 6-8" />
+            <path d="M16 6h3v3" />
+          </svg>
+        </div>
+        <div>
+          <h1>Trading Agent</h1>
+          <p>本地 A 股多智能体分析</p>
+        </div>
+      </div>
+      <div class="top-status">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">就绪</span>
+        <span class="divider"></span>
+        <span id="clock">--:--</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="sidebar">
+        <section class="panel control-panel">
+          <h2>分析控制</h2>
+          <form id="analyzeForm" class="form">
+            <label for="ticker">股票代码 / 名称</label>
+            <div class="input-wrapper">
+              <div class="input-row">
+                <input id="ticker" name="ticker" value="600036" autocomplete="off" placeholder="例如 600036 或 招商银行" />
+                <button id="clearBtn" type="button" title="清空">×</button>
+              </div>
+              <div id="suggestions" class="suggestions hidden"></div>
+            </div>
+            <button id="submitBtn" class="primary" type="submit">
+              <svg class="play-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+              开始分析
+            </button>
+          </form>
+          <div id="recentContainer" class="recent-container hidden">
+            <p class="recent-label">最近分析</p>
+            <div id="recentList" class="recent-list"></div>
+          </div>
+        </section>
+
+        <section class="panel compact">
+          <div class="panel-head">
+            <h2>运行状态</h2>
+            <span id="stateBadge" class="badge idle">待命</span>
+          </div>
+          <ol id="stageList" class="stages">
+            <li data-stage="collect"><span></span>采集数据</li>
+            <li data-stage="analysts"><span></span>分析师团队</li>
+            <li data-stage="debate"><span></span>研究员辩论</li>
+            <li data-stage="trader"><span></span>交易方案</li>
+            <li data-stage="risk"><span></span>风险评估</li>
+            <li data-stage="decision"><span></span>最终决策</li>
+          </ol>
+        </section>
+
+        <section class="panel compact">
+          <div class="panel-head">
+            <h2>历史记录</h2>
+            <button id="historyToggle" class="action-btn" type="button">展开</button>
+          </div>
+          <div id="historyPanel" class="history-panel hidden"></div>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <section class="panel hero-result" id="heroResult">
+          <div class="result-head">
+            <div>
+              <p class="eyeline">最终评级</p>
+              <h2 id="rating">等待分析</h2>
+              <div id="ratingSkeleton" class="skeleton skeleton-rating hidden"></div>
+              <p id="summary" class="summary">输入股票代码或名称开始分析。系统会调用 AI 多智能体流水线。</p>
+              <div id="summarySkeleton" class="skeleton skeleton-summary hidden">
+                <div class="skeleton-line w-full"></div>
+                <div class="skeleton-line w-3/4"></div>
+                <div class="skeleton-line w-1/2"></div>
+              </div>
+            </div>
+            <div id="tickerMeta" class="ticker-meta">--</div>
+          </div>
+          <div class="metrics" id="metricsArea">
+            <div>
+              <span>当前价</span>
+              <strong id="currentPrice">--</strong>
+            </div>
+            <div>
+              <span>涨跌幅</span>
+              <strong id="changePct">--</strong>
+            </div>
+            <div>
+              <span>目标价</span>
+              <strong id="targetPrice">--</strong>
+            </div>
+            <div>
+              <span>持有周期</span>
+              <strong id="horizon">--</strong>
+            </div>
+          </div>
+          <div id="metricsSkeleton" class="skeleton skeleton-metrics hidden">
+            <div class="skeleton-metric"></div>
+            <div class="skeleton-metric"></div>
+            <div class="skeleton-metric"></div>
+            <div class="skeleton-metric"></div>
+          </div>
+          <div class="result-actions">
+            <button id="copyBtn" class="action-btn" title="复制分析报告">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8z" fill="none" stroke="currentColor" stroke-width="2"/><polyline points="16,3 16,8 21,8" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+              复制报告
+            </button>
+          </div>
+          <div class="split">
+            <article>
+              <h3>投资论点</h3>
+              <p id="thesis">暂无内容。</p>
+              <div id="thesisSkeleton" class="skeleton skeleton-text hidden">
+                <div class="skeleton-line w-full"></div>
+                <div class="skeleton-line w-full"></div>
+                <div class="skeleton-line w-3/4"></div>
+              </div>
+            </article>
+            <article class="risk">
+              <h3>风险提示</h3>
+              <p id="riskWarning">暂无内容。</p>
+              <div id="riskSkeleton" class="skeleton skeleton-text hidden">
+                <div class="skeleton-line w-full"></div>
+                <div class="skeleton-line w-2/3"></div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="grid">
+          <article class="panel">
+            <h2>研究结论</h2>
+            <dl id="researchList" class="kv"></dl>
+          </article>
+          <article class="panel">
+            <h2>交易方案</h2>
+            <dl id="tradeList" class="kv"></dl>
+          </article>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>完整分析过程</h2>
+            <span id="newsCount" class="muted">暂无数据</span>
+          </div>
+          <div id="tabs" class="tabs" role="tablist">
+            <button class="active" data-tab="technical">技术分析</button>
+            <button data-tab="sentiment">情绪分析</button>
+            <button data-tab="news">新闻分析</button>
+            <button data-tab="fundamental">基本面分析</button>
+            <button data-tab="risk">风控意见</button>
+            <button data-tab="logs">运行日志</button>
+          </div>
+          <pre id="reportText" class="report">分析结果会显示在这里。</pre>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
