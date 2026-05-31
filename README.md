@@ -1,6 +1,15 @@
 # Trading Agent — A股多智能体交易分析系统
 
-基于 DeepSeek LLM 的多智能体协作框架，覆盖 A 股全栈数据（行情/研报/信号/资金面/新闻/基本面/公告），自动完成从数据采集到投资决策的全流程分析。
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License">
+  <img src="https://img.shields.io/github/stars/xvhaoran778-cyber/tradingagents?style=social" alt="Stars">
+  <img src="https://img.shields.io/badge/LLM-DeepSeek%20%7C%20OpenAI%20%7C%20Any-orange" alt="LLM Compatible">
+</p>
+
+**A 股多智能体交易分析系统** — 输入股票代码，自动调度 11 个 AI Agent 完成从数据采集到投资决策的全流程分析。支持任意 OpenAI 兼容 API（DeepSeek/OpenAI/Claude 等）。
+
+[English](./README.md) | [中文](./README.md)
 
 ## 系统架构
 
