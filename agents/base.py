@@ -1,12 +1,13 @@
 from llm.client import LLMClient
+from config import DEEP_MODEL
 
 
 class BaseAgent:
     name: str = "base"
 
-    def __init__(self, llm: LLMClient, model: str = "deepseek-chat"):
+    def __init__(self, llm: LLMClient, model: str = None):
         self.llm = llm
-        self.model = model
+        self.model = model or DEEP_MODEL
 
     @property
     def system_prompt(self) -> str:

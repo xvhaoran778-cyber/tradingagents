@@ -1,5 +1,5 @@
-from pydantic import BaseModel
 from typing import Optional
+from pydantic import BaseModel, field_validator
 
 
 class ResearchPlan(BaseModel):
@@ -27,3 +27,10 @@ class PortfolioDecision(BaseModel):
     risk_warning: str
     price_target: Optional[str] = None
     time_horizon: str
+
+    @field_validator("price_target", mode="before")
+    @classmethod
+    def coerce_price_target(cls, v):
+        if v is None:
+            return None
+        return str(v)

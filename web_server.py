@@ -81,6 +81,18 @@ class WebHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/health":
             self._send_json({"ok": True})
             return
+        if parsed.path == "/api/analyze/sse":
+            from urllib.parse import parse_qs
+            params = parse_qs(parsed.query)
+            ticker = (params.get("ticker") or [None])[0]
+            if ticker:
+                self._handle_sse(ticker)
+            else:
+                self._send_json({"error": "Missing ticker"}, status=400)
+            return
+        if parsed.path == "/api/settings":
+            self._handle_get_settings()
+            return
         if parsed.path == "/":
             self.path = "/index.html"
         return super().do_GET()
@@ -99,6 +111,8 @@ class WebHandler(SimpleHTTPRequestHandler):
                 self._handle_history()
             elif parsed.path.startswith("/api/history/"):
                 self._handle_history_detail()
+            elif parsed.path == "/api/settings":
+                self._handle_update_settings()
             else:
                 self._send_json({"error": "Not found"}, status=404)
         except Exception as exc:
@@ -171,12 +185,15 @@ class WebHandler(SimpleHTTPRequestHandler):
         def run_pipeline():
             try:
                 state = TradingPipeline().run(ticker, on_progress=on_progress)
-                q.put(("result", _state_to_payload(state, raw_input=raw_input)))
+                payload = _state_to_payload(state, raw_input=raw_input)
+                q.put(("result", payload))
                 try:
                     save_analysis(state, raw_input=raw_input)
                 except Exception:
                     pass
             except Exception as exc:
+                import traceback
+                traceback.print_exc()
                 q.put(("error", {"error": str(exc)}))
 
         thread = threading.Thread(target=run_pipeline, daemon=True)
@@ -191,9 +208,9 @@ class WebHandler(SimpleHTTPRequestHandler):
                     elif kind == "result":
                         self._sse_send("result", data)
                         self._sse_send("done", {})
+                        self.close_connection = True
                         try:
                             self.wfile.flush()
-                            self.connection.shutdown(socket.SHUT_WR)
                         except Exception:
                             pass
                         return
@@ -201,6 +218,64 @@ class WebHandler(SimpleHTTPRequestHandler):
                         self._sse_send("error", data)
                         self.close_connection = True
                         self.wfile.flush()
+                        return
+                except queue.Empty:
+                    pass
+        except BrokenPipeError:
+            pass
+
+    def _handle_sse(self, ticker):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self._cors_headers()
+        self.end_headers()
+
+        q = queue.Queue()
+
+        def on_progress(phase, detail):
+            q.put(("progress", {"phase": phase, "detail": detail}))
+
+        def run_pipeline():
+            try:
+                state = TradingPipeline().run(ticker, on_progress=on_progress)
+                payload = _state_to_payload(state, raw_input=ticker)
+                q.put(("result", payload))
+                try:
+                    save_analysis(state, raw_input=ticker)
+                except Exception:
+                    pass
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                q.put(("error", {"error": str(exc)}))
+
+        thread = threading.Thread(target=run_pipeline, daemon=True)
+        thread.start()
+
+        try:
+            while thread.is_alive() or not q.empty():
+                try:
+                    kind, data = q.get(timeout=2.0)
+                    if kind == "progress":
+                        self._sse_send("progress", data)
+                    elif kind == "result":
+                        self._sse_send("result", data)
+                        self._sse_send("done", {})
+                        self.close_connection = True
+                        try:
+                            self.wfile.flush()
+                        except Exception:
+                            pass
+                        return
+                    elif kind == "error":
+                        self._sse_send("error", data)
+                        self.close_connection = True
+                        try:
+                            self.wfile.flush()
+                        except Exception:
+                            pass
                         return
                 except queue.Empty:
                     pass
@@ -233,6 +308,45 @@ class WebHandler(SimpleHTTPRequestHandler):
         except Exception:
             pass
 
+    def _handle_get_settings(self):
+        from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_QUICK_MODEL
+        cfg_path = WEB_DIR.parent / "llm_config.json"
+        file_cfg = {}
+        if cfg_path.exists():
+            try:
+                file_cfg = json.loads(cfg_path.read_text())
+            except Exception:
+                pass
+        self._send_json({
+            "api_key": (LLM_API_KEY[:6] + "****" + LLM_API_KEY[-4:]) if len(LLM_API_KEY) > 12 else "",
+            "base_url": LLM_BASE_URL,
+            "model": LLM_MODEL,
+            "quick_model": LLM_QUICK_MODEL,
+            "file_config": file_cfg,
+            "warning": "修改后需重启服务器生效",
+        })
+
+    def _handle_update_settings(self):
+        body = self._read_body()
+        cfg_path = WEB_DIR.parent / "llm_config.json"
+        current = {}
+        if cfg_path.exists():
+            try:
+                current = json.loads(cfg_path.read_text())
+            except Exception:
+                pass
+        for key in ("api_key", "base_url", "model", "quick_model"):
+            if key in body and body[key]:
+                current[key] = body[key]
+            elif key in body and not body[key]:
+                current.pop(key, None)
+        cfg_path.write_text(json.dumps(current, ensure_ascii=False, indent=2))
+        self._send_json({
+            "status": "saved",
+            "path": str(cfg_path),
+            "warning": "修改已保存到 llm_config.json，需重启服务器生效。请在服务器执行: pkill -f web_server.py && nohup ... &",
+        })
+
     def _send_json(self, payload, status=200):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -254,11 +368,11 @@ def _find_port(preferred):
 
 def main():
     parser = argparse.ArgumentParser(description="Trading Agent Web UI")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=6789)
     args = parser.parse_args()
 
     port = _find_port(args.port)
-    server = ThreadingHTTPServer(("127.0.0.1", port), WebHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), WebHandler)
     print(f"Trading Agent Web UI: http://127.0.0.1:{port}")
     print("Press Ctrl+C to stop.")
     server.serve_forever()

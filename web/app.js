@@ -1,491 +1,331 @@
-const form = document.querySelector("#analyzeForm");
-const tickerInput = document.querySelector("#ticker");
-const clearBtn = document.querySelector("#clearBtn");
-const submitBtn = document.querySelector("#submitBtn");
-const stateBadge = document.querySelector("#stateBadge");
-const statusDot = document.querySelector("#statusDot");
-const statusText = document.querySelector("#statusText");
-const stageItems = [...document.querySelectorAll("#stageList li")];
-const reportText = document.querySelector("#reportText");
-const tabs = document.querySelector("#tabs");
-const clock = document.querySelector("#clock");
-const toast = document.querySelector("#toast");
-const copyBtn = document.querySelector("#copyBtn");
-const recentContainer = document.querySelector("#recentContainer");
-const recentList = document.querySelector("#recentList");
-const suggestions = document.querySelector("#suggestions");
-const historyPanel = document.querySelector("#historyPanel");
-const historyToggle = document.querySelector("#historyToggle");
+const $ = (s, p) => (p || document).querySelector(s);
+const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
+
+const form = $("#form");
+const input = $("#ticker");
+const clearBtn = $("#clearBtn");
+const submitBtn = $("#submitBtn");
+const statusDot = $("#statusDot");
+const statusText = $("#statusText");
+const badge = $("#badge");
+const stages = $$("#stages li");
+const reportEl = $("#report");
+const tabs = $("#tabs");
+const clock = $("#clock");
+const toast = $("#toast");
+const copyBtn = $("#copyBtn");
+const recentContainer = $("#recent");
+const recentList = $("#recentList");
+const suggestions = $("#suggestions");
+const historyPanel = $("#historyPanel");
+const historyBtn = $("#historyBtn");
+const loader = $("#loader");
+const loaderText = $("#loaderText");
+const elapsed = $("#elapsed");
 
 let latest = null;
 let activeTab = "technical";
-let currentController = null;
-let streamDone = false;
-
-const stageKeyOrder = ["collect", "analysts", "debate", "trader", "risk", "decision"];
+let abortC = null;
+let timerInt = null;
+let timerSec = 0;
+const STAGES = ["collect","analysts","debate","trader","risk","decision"];
 
 /* ---------- clock ---------- */
-function setClock() {
-  const now = new Date();
-  clock.textContent = now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-setClock();
-setInterval(setClock, 1000);
+(function tick() {
+  clock.textContent = new Date().toLocaleTimeString("zh-CN", { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+  setTimeout(tick, 1000 - Date.now() % 1000);
+})();
 
 /* ---------- clear ---------- */
-clearBtn.addEventListener("click", () => {
-  tickerInput.value = "";
-  tickerInput.focus();
-  hideSuggestions();
-});
+clearBtn.addEventListener("click", () => { input.value = ""; input.focus(); hideSugg(); });
 
-/* ---------- keyboard shortcuts ---------- */
-tickerInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !submitBtn.disabled) {
-    e.preventDefault();
-    form.requestSubmit();
-  }
-  if (e.key === "ArrowDown") return navigateSuggestion(1);
-  if (e.key === "ArrowUp") return navigateSuggestion(-1);
-  if (e.key === "Escape") return hideSuggestions();
-});
-
-document.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !submitBtn.disabled) {
-    e.preventDefault();
-    form.requestSubmit();
-  }
+/* ---------- keyboard ---------- */
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !submitBtn.disabled) { e.preventDefault(); form.requestSubmit(); }
+  if (e.key === "ArrowDown") return navSugg(1);
+  if (e.key === "ArrowUp") return navSugg(-1);
+  if (e.key === "Escape") return hideSugg();
 });
 
 /* ---------- autocomplete ---------- */
-let debounceTimer = null;
-let suggestionIndex = -1;
-
-tickerInput.addEventListener("input", () => {
-  clearTimeout(debounceTimer);
-  const val = tickerInput.value.trim();
-  if (!val || /^\d{6}$/.test(val)) {
-    hideSuggestions();
-    return;
-  }
-  debounceTimer = setTimeout(() => fetchSuggestions(val), 300);
+let deb = null, suggIdx = -1;
+input.addEventListener("input", () => {
+  clearTimeout(deb);
+  const v = input.value.trim();
+  if (!v || /^\d{6}$/.test(v)) { hideSugg(); return; }
+  deb = setTimeout(() => fetchSugg(v), 300);
+});
+input.addEventListener("blur", () => setTimeout(hideSugg, 200));
+input.addEventListener("focus", () => {
+  const v = input.value.trim();
+  if (v && !/^\d{6}$/.test(v)) fetchSugg(v);
 });
 
-tickerInput.addEventListener("blur", () => {
-  setTimeout(hideSuggestions, 200);
-});
-
-tickerInput.addEventListener("focus", () => {
-  const val = tickerInput.value.trim();
-  if (val && !/^\d{6}$/.test(val)) {
-    fetchSuggestions(val);
-  }
-});
-
-async function fetchSuggestions(query) {
-  let resp;
-  try {
-    resp = await fetch("/api/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-    });
-  } catch (e) {
-    return;
-  }
-  if (!resp.ok) return;
-  const data = await resp.json();
-  const results = data.results || [];
-  if (results.length === 0) {
-    hideSuggestions();
-    return;
-  }
-  renderSuggestions(results);
+async function fetchSugg(q) {
+  let r;
+  try { r = await fetch("/api/search", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({query:q}) }); }
+  catch { return; }
+  if (!r.ok) return;
+  const items = (await r.json()).results || [];
+  if (!items.length) { hideSugg(); return; }
+  renderSugg(items);
 }
 
-function renderSuggestions(items) {
+function renderSugg(items) {
   suggestions.innerHTML = "";
-  suggestionIndex = -1;
+  suggIdx = -1;
   items.forEach((item, i) => {
     const div = document.createElement("div");
     div.className = "suggestion-item";
-    div.innerHTML = `<span class="suggestion-code">${item.code}</span><span class="suggestion-name">${item.name}</span>`;
-    div.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      selectSuggestion(item.code);
-    });
-    div.addEventListener("mouseenter", () => {
-      suggestionIndex = i;
-      highlightSuggestion();
-    });
+    div.innerHTML = `<span class="suggestion-code">${item.code}</span><span>${item.name}</span>`;
+    div.addEventListener("mousedown", e => { e.preventDefault(); pickSugg(item.code); });
+    div.addEventListener("mouseenter", () => { suggIdx = i; highlightSugg(); });
     suggestions.appendChild(div);
   });
   suggestions.classList.remove("hidden");
 }
 
-function hideSuggestions() {
-  suggestions.classList.add("hidden");
-  suggestionIndex = -1;
-}
+function hideSugg() { suggestions.classList.add("hidden"); suggIdx = -1; }
 
-function navigateSuggestion(dir) {
+function navSugg(dir) {
   if (suggestions.classList.contains("hidden")) return;
   const items = suggestions.querySelectorAll(".suggestion-item");
   if (!items.length) return;
-  suggestionIndex = Math.max(-1, Math.min(items.length - 1, suggestionIndex + dir));
-  highlightSuggestion();
-  if (suggestionIndex >= 0) {
-    const code = items[suggestionIndex].querySelector(".suggestion-code").textContent;
-    tickerInput.value = code;
-  }
+  suggIdx = Math.max(-1, Math.min(items.length - 1, suggIdx + dir));
+  highlightSugg();
+  if (suggIdx >= 0) input.value = items[suggIdx].querySelector(".suggestion-code").textContent;
 }
 
-function highlightSuggestion() {
-  const items = suggestions.querySelectorAll(".suggestion-item");
-  items.forEach((el, i) => el.classList.toggle("active", i === suggestionIndex));
+function highlightSugg() {
+  suggestions.querySelectorAll(".suggestion-item").forEach((el, i) => el.classList.toggle("active", i === suggIdx));
 }
 
-function selectSuggestion(code) {
-  tickerInput.value = code;
-  hideSuggestions();
-  form.requestSubmit();
-}
+function pickSugg(code) { input.value = code; hideSugg(); form.requestSubmit(); }
 
-/* ---------- form submit ---------- */
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const rawInput = tickerInput.value.trim();
-  if (!rawInput) {
-    showToast("请输入股票代码或名称", "warn");
-    return;
-  }
+/* ---------- submit ---------- */
+form.addEventListener("submit", async e => {
+  e.preventDefault();
+  const raw = input.value.trim();
+  if (!raw) { showToast("请输入股票代码或名称", "warn"); return; }
 
-  if (currentController) {
-    currentController.abort();
-  }
+  if (abortC) { abortC.abort(); abortC = null; }
+  clearInterval(timerInt);
 
   latest = null;
-  streamDone = false;
-  setRunning(true);
+  setBusy(true);
   resetStages();
-  showSkeleton();
+  showSkel();
+  hideResult();
 
   try {
-    const ticker = await resolveTicker(rawInput);
-    if (!ticker) {
-      setRunning(false);
-      hideSkeleton();
-      return;
-    }
-    addRecent(rawInput);
-    await startStream(ticker);
-  } catch (error) {
-    if (error.name === "AbortError") return;
-    showError(error.message || "分析请求失败");
+    const ticker = await resolveTicker(raw);
+    if (!ticker) { setBusy(false); hideSkel(); return; }
+    addRecent(raw);
+    await startLoad(ticker);
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    showErr(err.message || "分析失败");
   } finally {
-    setRunning(false);
-    hideSkeleton();
+    setBusy(false);
+    hideSkel();
+    hideLoader();
   }
 });
 
-async function resolveTicker(input) {
-  if (/^\d{6}$/.test(input)) return input;
-
-  let resp;
-  try {
-    resp = await fetch("/api/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: input }),
-    });
-  } catch (e) {
-    showToast("搜索请求失败: " + e.message, "error");
-    return null;
-  }
-
+async function resolveTicker(raw) {
+  if (/^\d{6}$/.test(raw)) return raw;
+  let r;
+  try { r = await fetch("/api/search", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({query:raw}) }); }
+  catch (e) { showToast("搜索请求失败", "err"); return null; }
   let data;
-  try {
-    data = await resp.json();
-  } catch (e) {
-    showToast("搜索服务返回异常，请检查服务器是否运行", "error");
-    return null;
-  }
-
-  if (!resp.ok) {
-    showToast(data.error || "搜索失败", "error");
-    return null;
-  }
-
-  const results = data.results || [];
-  if (results.length === 0) {
-    showToast(`未找到匹配的股票: ${input}`, "error");
-    return null;
-  }
-
+  try { data = await r.json(); } catch { showToast("搜索服务异常", "err"); return null; }
+  if (!r.ok) { showToast(data.error || "搜索失败", "err"); return null; }
+  const items = data.results || [];
+  if (!items.length) { showToast("未找到匹配: " + raw, "err"); return null; }
   const seen = new Set();
-  const deduped = results.filter((r) => {
-    if (seen.has(r.code)) return false;
-    seen.add(r.code);
-    return true;
+  const dedup = items.filter(r => { if (seen.has(r.code)) return false; seen.add(r.code); return true; });
+  if (dedup.length === 1) { input.value = dedup[0].code; return dedup[0].code; }
+  const a = dedup[0], b = dedup[1];
+  if (a && b && a.code !== b.code) { showToast("多个匹配: " + dedup.map(r=>r.code+" "+r.name).join(" / "), "warn"); return null; }
+  input.value = a.code;
+  return a.code;
+}
+
+/* ---------- loader ---------- */
+function showLoader(msg) {
+  loader.classList.remove("hidden");
+  loaderText.textContent = msg || "分析中，预计 2~3 分钟...";
+  timerSec = 0;
+  elapsed.textContent = "00:00";
+  clearInterval(timerInt);
+  timerInt = setInterval(() => {
+    timerSec++;
+    const m = String(Math.floor(timerSec / 60)).padStart(2, "0");
+    const s = String(timerSec % 60).padStart(2, "0");
+    elapsed.textContent = m + ":" + s;
+  }, 1000);
+}
+
+function hideLoader() {
+  loader.classList.add("hidden");
+  clearInterval(timerInt);
+}
+
+/* ---------- result visibility ---------- */
+function hideResult() {
+  document.querySelectorAll(".grid-2, .card:has(#tabs)").forEach(el => el.style.display = "none");
+}
+
+function showResult() {
+  document.querySelectorAll(".grid-2, .card:has(#tabs)").forEach(el => el.style.display = "");
+}
+
+/* ---------- blocking POST ---------- */
+async function startLoad(ticker) {
+  showLoader("分析中，预计 2~3 分钟...");
+
+  const ac = new AbortController();
+  abortC = ac;
+
+  const r = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ticker }),
+    signal: ac.signal,
   });
+  abortC = null;
 
-  if (deduped.length === 1) {
-    tickerInput.value = deduped[0].code;
-    return deduped[0].code;
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: "HTTP " + r.status }));
+    throw new Error(err.error || "请求失败");
   }
+  const data = await r.json();
+  if (data.error) throw new Error(data.error);
 
-  const first = deduped[0];
-  const second = deduped[1];
-  if (first && second && first.code !== second.code) {
-    showToast(`找到多个匹配: ${deduped.map((r) => `${r.code} ${r.name}`).join(" / ")}`, "warn");
-    return null;
-  }
-
-  tickerInput.value = first.code;
-  return first.code;
+  latest = data;
+  markDone("decision");
+  renderResult(data);
+  setBadge("完成", "done");
+  statusDot.className = "dot";
+  statusText.textContent = "就绪";
+  showResult();
+  hideLoader();
 }
 
-function setRunning(isRunning) {
-  submitBtn.disabled = isRunning;
-  if (isRunning) {
-    submitBtn.innerHTML = '<span class="spinner"></span> 分析中...';
-    setBadge("运行中", "running");
-    statusDot.className = "dot pulse";
-    statusText.textContent = "分析中";
-  } else {
-    submitBtn.innerHTML = '<svg class="play-icon" viewBox="0 0 24 24" width="14" height="14"><path d="M8 5v14l11-7z" fill="currentColor"/></svg> 开始分析';
-    statusDot.className = "dot";
-    statusText.textContent = "就绪";
-  }
+/* ---------- busy state ---------- */
+function setBusy(on) {
+  submitBtn.disabled = on;
+  submitBtn.innerHTML = on
+    ? '<span class="spinner"></span> 分析中'
+    : '<svg width="14" height="14" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="currentColor"/></svg> 开始分析';
+  setBadge(on ? "运行中" : "待命", on ? "running" : "idle");
+  statusDot.className = "dot" + (on ? " pulse" : "");
+  statusText.textContent = on ? "分析中" : "就绪";
 }
 
-function setBadge(text, className) {
-  stateBadge.textContent = text;
-  stateBadge.className = `badge ${className}`;
+function setBadge(text, cls) {
+  badge.textContent = text;
+  badge.className = "badge " + cls;
 }
 
 function resetStages() {
-  stageItems.forEach((item) => {
-    item.className = "";
-    item.classList.remove("done", "active", "error");
-  });
+  stages.forEach(el => { el.className = ""; el.classList.remove("done","active"); });
 }
 
-function markStageDone(stageId) {
-  stageItems.forEach((item) => {
-    if (item.dataset.stage === stageId || stageKeyOrder.indexOf(item.dataset.stage) < stageKeyOrder.indexOf(stageId)) {
-      item.classList.add("done");
-      item.classList.remove("active");
+function markDone(id) {
+  stages.forEach(el => {
+    if (el.dataset.stage === id || STAGES.indexOf(el.dataset.stage) < STAGES.indexOf(id)) {
+      el.classList.add("done");
+      el.classList.remove("active");
     }
   });
 }
 
 /* ---------- skeleton ---------- */
-function showSkeleton() {
-  document.querySelector("#rating").style.display = "none";
-  document.querySelector("#ratingSkeleton").classList.remove("hidden");
-  document.querySelector("#summary").style.display = "none";
-  document.querySelector("#summarySkeleton").classList.remove("hidden");
-  document.querySelector("#metricsArea").style.display = "none";
-  document.querySelector("#metricsSkeleton").classList.remove("hidden");
-  document.querySelector("#thesis").style.display = "none";
-  document.querySelector("#thesisSkeleton").classList.remove("hidden");
-  document.querySelector("#riskWarning").style.display = "none";
-  document.querySelector("#riskSkeleton").classList.remove("hidden");
+function showSkel() {
+  $("#rating").style.display = "none";
+  $("#ratingSkel").classList.remove("hidden");
+  $("#summary").style.display = "none";
+  $("#summarySkel").classList.remove("hidden");
+  $("#metricsArea").style.display = "none";
+  $("#metricsSkel").classList.remove("hidden");
+  $("#thesis").style.display = "none";
+  $("#thesisSkel").classList.remove("hidden");
+  $("#riskWarning").style.display = "none";
+  $("#riskSkel").classList.remove("hidden");
 }
 
-function hideSkeleton() {
-  document.querySelector("#rating").style.display = "";
-  document.querySelector("#ratingSkeleton").classList.add("hidden");
-  document.querySelector("#summary").style.display = "";
-  document.querySelector("#summarySkeleton").classList.add("hidden");
-  document.querySelector("#metricsArea").style.display = "";
-  document.querySelector("#metricsSkeleton").classList.add("hidden");
-  document.querySelector("#thesis").style.display = "";
-  document.querySelector("#thesisSkeleton").classList.add("hidden");
-  document.querySelector("#riskWarning").style.display = "";
-  document.querySelector("#riskSkeleton").classList.add("hidden");
+function hideSkel() {
+  $("#rating").style.display = "";
+  $("#ratingSkel").classList.add("hidden");
+  $("#summary").style.display = "";
+  $("#summarySkel").classList.add("hidden");
+  $("#metricsArea").style.display = "";
+  $("#metricsSkel").classList.add("hidden");
+  $("#thesis").style.display = "";
+  $("#thesisSkel").classList.add("hidden");
+  $("#riskWarning").style.display = "";
+  $("#riskSkel").classList.add("hidden");
 }
 
-/* ---------- SSE ---------- */
-async function startStream(ticker) {
-  const controller = new AbortController();
-  currentController = controller;
-  streamDone = false;
-
-  const response = await fetch("/api/analyze/stream", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ticker }),
-    signal: controller.signal,
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-    throw new Error(err.error || "请求失败");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (!streamDone) {
-    let result;
-    try {
-      result = await reader.read();
-    } catch (e) {
-      if (e.name === "AbortError") break;
-      throw e;
-    }
-    const { done, value } = result;
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    let event = null;
-    let data = "";
-
-    for (const line of lines) {
-      if (line.startsWith("event: ")) {
-        event = line.slice(7).trim();
-      } else if (line.startsWith("data: ")) {
-        data = line.slice(6).trim();
-      } else if (line === "" && event && data) {
-        try {
-          handleEvent(event, JSON.parse(data));
-        } catch (e) { /* ignore */ }
-        event = null;
-        data = "";
-      }
-    }
-  }
-
-  currentController = null;
-}
-
-function handleEvent(event, data) {
-  switch (event) {
-    case "progress":
-      handleProgress(data);
-      break;
-    case "result":
-      latest = data;
-      renderResult(data);
-      setBadge("完成", "done");
-      statusDot.className = "dot";
-      statusText.textContent = "就绪";
-      streamDone = true;
-      break;
-    case "done":
-      streamDone = true;
-      break;
-    case "error":
-      showError(data.error || "分析出错");
-      break;
-  }
-}
-
-function handleProgress(data) {
-  const phase = data.phase;
-
-  if (phase === "collect") {
-    markStageDone("collect");
-    stageItems.forEach((e) => e.dataset.stage === "analysts" && e.classList.add("active"));
-  } else if (phase === "analysts" && data.detail === "分析师团队完成") {
-    markStageDone("analysts");
-    stageItems.forEach((e) => e.dataset.stage === "debate" && e.classList.add("active"));
-  } else if (phase === "debate" && data.detail === "研究员辩论完成") {
-    markStageDone("debate");
-    stageItems.forEach((e) => e.dataset.stage === "trader" && e.classList.add("active"));
-  } else if (phase === "trader" && data.detail === "交易方案完成") {
-    markStageDone("trader");
-    stageItems.forEach((e) => e.dataset.stage === "risk" && e.classList.add("active"));
-  } else if (phase === "risk" && data.detail === "风险评估完成") {
-    markStageDone("risk");
-    stageItems.forEach((e) => e.dataset.stage === "decision" && e.classList.add("active"));
-  } else if (phase === "decision" && data.detail === "最终决策完成") {
-    markStageDone("decision");
-  } else if (phase === "done") {
-    stageItems.forEach((e) => e.classList.add("done"));
-  }
-
-  if (data.detail && !data.detail.endsWith("完成")) {
-    reportText.textContent = data.detail;
-    reportText.classList.add("live");
-    setTimeout(() => reportText.classList.remove("live"), 500);
-  }
-}
-
-function showError(message) {
-  setBadge("出错", "error");
-  statusDot.className = "dot error-dot";
-  statusText.textContent = "出错";
-  latest = { error: message };
-  reportText.textContent = `❌ ${message}`;
-  showToast(message, "error");
-}
-
-/* ---------- render result ---------- */
+/* ---------- render ---------- */
 function renderResult(data) {
-  const decision = data.final_decision || {};
-  const realtime = data.raw_data?.realtime || {};
-  const research = data.research_plan || {};
-  const trade = data.trade_proposal || {};
+  const dec = data.final_decision || {};
+  const rt = data.raw_data?.realtime || {};
+  const res = data.research_plan || {};
+  const tr = data.trade_proposal || {};
 
-  const ratingEl = document.querySelector("#rating");
-  ratingEl.textContent = `${decision.rating_cn || "未生成"} ${decision.rating ? `(${decision.rating})` : ""}`;
-  ratingEl.style.color = ratingColor(decision.rating);
-  document.querySelector("#summary").textContent = decision.executive_summary || "暂无摘要。";
+  const r = $("#rating");
+  r.textContent = (dec.rating_cn || "未生成") + (dec.rating ? " (" + dec.rating + ")" : "");
+  r.style.color = ratingColor(dec.rating);
+  $("#summary").textContent = dec.executive_summary || "暂无摘要。";
 
-  const meta = `${data.ticker || "--"} ${data.ticker_name || ""}`;
-  const searchInput = data.search_input;
-  document.querySelector("#tickerMeta").textContent = searchInput && searchInput !== data.ticker ? `${searchInput} → ${meta}` : meta;
+  const meta = (data.ticker || "--") + " " + (data.ticker_name || "");
+  const si = data.search_input;
+  $("#tickerMeta").textContent = (si && si !== data.ticker) ? si + " → " + meta : meta;
 
-  document.querySelector("#currentPrice").textContent = formatValue(realtime.current);
-  const cp = document.querySelector("#changePct");
-  cp.textContent = formatPct(realtime.change_pct);
-  cp.style.color = (realtime.change_pct || 0) >= 0 ? "var(--good)" : "var(--bad)";
-  document.querySelector("#targetPrice").textContent = decision.price_target || trade.target_price || "--";
-  document.querySelector("#horizon").textContent = decision.time_horizon || research.time_horizon || "--";
-  document.querySelector("#thesis").textContent = decision.investment_thesis || "暂无内容。";
-  document.querySelector("#riskWarning").textContent = decision.risk_warning || "暂无内容。";
-  document.querySelector("#newsCount").textContent = `${data.raw_data?.news?.length || 0} 条新闻`;
+  $("#currentPrice").textContent = fmtVal(rt.current);
+  const cp = $("#changePct");
+  cp.textContent = fmtPct(rt.change_pct);
+  cp.style.color = (rt.change_pct || 0) >= 0 ? "var(--good)" : "var(--bad)";
+  $("#targetPrice").textContent = dec.price_target || tr.target_price || "--";
+  $("#horizon").textContent = dec.time_horizon || res.time_horizon || "--";
+  $("#thesis").textContent = dec.investment_thesis || "暂无内容。";
+  $("#riskWarning").textContent = dec.risk_warning || "暂无内容。";
+  $("#newsCount").textContent = (data.raw_data?.news?.length || 0) + " 条新闻";
 
-  renderKv("#researchList", [
-    ["推荐", research.recommendation],
-    ["置信度", research.confidence == null ? "" : `${Math.round(research.confidence * 100)}%`],
-    ["周期", research.time_horizon],
-    ["理由", research.rationale],
-    ["关键风险", Array.isArray(research.key_risks) ? research.key_risks.join(" / ") : ""],
+  renderKV("#researchList", [
+    ["推荐", res.recommendation],
+    ["置信度", res.confidence == null ? "" : Math.round(res.confidence * 100) + "%"],
+    ["周期", res.time_horizon],
+    ["理由", res.rationale],
+    ["关键风险", Array.isArray(res.key_risks) ? res.key_risks.join(" / ") : ""],
   ]);
 
-  renderKv("#tradeList", [
-    ["操作", trade.action],
-    ["入场区间", trade.entry_price_range],
-    ["建议仓位", trade.position_sizing],
-    ["止损", trade.stop_loss],
-    ["目标位", trade.target_price],
-    ["理由", trade.reasoning],
+  renderKV("#tradeList", [
+    ["操作", tr.action],
+    ["入场区间", tr.entry_price_range],
+    ["建议仓位", tr.position_sizing],
+    ["止损", tr.stop_loss],
+    ["目标位", tr.target_price],
+    ["理由", tr.reasoning],
   ]);
 
   renderReport();
 }
 
-function ratingColor(rating) {
-  return ({ Buy: "var(--good)", Overweight: "var(--good)", Hold: "var(--warn)", Underweight: "var(--bad)", Sell: "var(--bad)" })[rating] || "var(--text)";
+function ratingColor(r) {
+  return ({ Buy:"var(--good)", Overweight:"var(--good)", Hold:"var(--warn)", Underweight:"var(--bad)", Sell:"var(--bad)" })[r] || "var(--text)";
 }
 
-function renderKv(selector, rows) {
-  const node = document.querySelector(selector);
+function renderKV(sel, rows) {
+  const node = $(sel);
   node.innerHTML = "";
   rows.forEach(([label, value]) => {
-    const dt = document.createElement("dt");
-    const dd = document.createElement("dd");
-    dt.textContent = label;
-    dd.textContent = value || "--";
-    node.append(dt, dd);
+    node.append(
+      Object.assign(document.createElement("dt"), { textContent: label }),
+      Object.assign(document.createElement("dd"), { textContent: value || "--" })
+    );
   });
 }
 
@@ -498,195 +338,216 @@ function renderReport() {
     sentiment: reports.sentiment,
     news: reports.news,
     fundamental: reports.fundamental,
-    risk: risk.map((item) => `【${item.agent}】\n${item.assessment}`).join("\n\n"),
+    risk: risk.map(i => "【" + i.agent + "】\n" + i.assessment).join("\n\n"),
     logs: latest.logs,
   }[activeTab];
-  reportText.textContent = content || "暂无内容。";
-  reportText.classList.remove("live");
+  reportEl.textContent = content || "暂无内容。";
+  reportEl.classList.remove("live");
 }
 
-/* ---------- tab switching ---------- */
-tabs.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-tab]");
-  if (!button) return;
-  activeTab = button.dataset.tab;
-  [...tabs.querySelectorAll("button")].forEach((item) => item.classList.toggle("active", item === button));
+/* ---------- tabs ---------- */
+tabs.addEventListener("click", e => {
+  const b = e.target.closest("button[data-tab]");
+  if (!b) return;
+  activeTab = b.dataset.tab;
+  $$("button", tabs).forEach(el => el.classList.toggle("active", el === b));
   renderReport();
 });
 
 /* ---------- copy ---------- */
-copyBtn.addEventListener("click", copyReport);
-
-function copyReport() {
-  if (!latest || latest.error) {
-    showToast("没有可复制的内容，请先运行分析", "warn");
-    return;
-  }
-
-  const decision = latest.final_decision || {};
+copyBtn.addEventListener("click", () => {
+  if (!latest || latest.error) { showToast("无内容可复制", "warn"); return; }
+  const dec = latest.final_decision || {};
   const parts = [
-    `${"=".repeat(40)}`,
-    `Trading Agent 分析报告`,
-    `${"=".repeat(40)}`,
-    ``,
-    `股票: ${latest.ticker} ${latest.ticker_name || ""}`,
-    `评级: ${decision.rating_cn || ""} (${decision.rating || ""})`,
-    `摘要: ${decision.executive_summary || ""}`,
-    ``,
-    `当前价: ${formatValue(latest.raw_data?.realtime?.current)}`,
-    `涨跌幅: ${formatPct(latest.raw_data?.realtime?.change_pct)}`,
-    `目标价: ${decision.price_target || "--"}`,
-    `持有周期: ${decision.time_horizon || "--"}`,
-    ``,
-    `投资论点:`,
-    decision.investment_thesis || "",
-    ``,
-    `风险提示:`,
-    decision.risk_warning || "",
+    "=".repeat(36),
+    "Trading Agent 分析报告",
+    "=".repeat(36), "",
+    "股票: " + latest.ticker + " " + (latest.ticker_name || ""),
+    "评级: " + (dec.rating_cn || "") + " (" + (dec.rating || "") + ")",
+    "摘要: " + (dec.executive_summary || ""), "",
+    "当前价: " + fmtVal(latest.raw_data?.realtime?.current),
+    "涨跌幅: " + fmtPct(latest.raw_data?.realtime?.change_pct),
+    "目标价: " + (dec.price_target || "--"),
+    "持有周期: " + (dec.time_horizon || "--"), "",
+    "投资论点:", dec.investment_thesis || "", "",
+    "风险提示:", dec.risk_warning || "",
   ];
-
   if (latest.research_plan) {
-    const rp = latest.research_plan;
-    parts.push(``, `研究推荐: ${rp.recommendation} (置信度: ${Math.round((rp.confidence || 0) * 100)}%)`);
-    parts.push(`理由: ${rp.rationale || ""}`);
+    const r = latest.research_plan;
+    parts.push("", "研究推荐: " + r.recommendation + " (" + Math.round((r.confidence||0)*100) + "%)");
+    if (r.rationale) parts.push("理由: " + r.rationale);
   }
-
   if (latest.trade_proposal) {
-    const tp = latest.trade_proposal;
-    parts.push(``, `交易操作: ${tp.action || ""}`);
-    if (tp.entry_price_range) parts.push(`入场区间: ${tp.entry_price_range}`);
-    if (tp.position_sizing) parts.push(`仓位: ${tp.position_sizing}`);
-    if (tp.stop_loss) parts.push(`止损: ${tp.stop_loss}`);
-    if (tp.target_price) parts.push(`目标位: ${tp.target_price}`);
+    const t = latest.trade_proposal;
+    parts.push("", "操作: " + (t.action || ""));
+    if (t.entry_price_range) parts.push("入场: " + t.entry_price_range);
+    if (t.position_sizing) parts.push("仓位: " + t.position_sizing);
+    if (t.stop_loss) parts.push("止损: " + t.stop_loss);
+    if (t.target_price) parts.push("目标: " + t.target_price);
   }
-
-  parts.push(``, `${"=".repeat(40)}`);
-
-  navigator.clipboard.writeText(parts.join("\n")).then(() => {
-    showToast("报告已复制到剪贴板", "success");
-  }).catch(() => {
-    showToast("复制失败，请手动复制", "error");
-  });
-}
+  parts.push("", "=".repeat(36));
+  navigator.clipboard.writeText(parts.join("\n")).then(
+    () => showToast("已复制", "succ"),
+    () => showToast("复制失败", "err")
+  );
+});
 
 /* ---------- toast ---------- */
-function showToast(message, type) {
-  toast.textContent = message;
-  toast.className = `toast ${type}`;
+function showToast(msg, type) {
+  toast.className = "toast " + type;
+  toast.textContent = msg;
   clearTimeout(toast._timer);
   toast._timer = setTimeout(() => toast.classList.add("hidden"), 3000);
 }
 
-function formatValue(value) {
-  if (value == null || value === "") return "--";
-  const n = Number(value);
-  return Number.isFinite(n) ? n.toFixed(2) : String(value);
+function showErr(msg) {
+  setBadge("出错", "err");
+  statusDot.className = "dot err";
+  statusText.textContent = "出错";
+  latest = { error: msg };
+  reportEl.textContent = "❌ " + msg;
+  showToast(msg, "err");
 }
 
-function formatPct(value) {
-  if (value == null || value === "") return "--";
-  const n = Number(value);
-  return Number.isFinite(n) ? `${n > 0 ? "+" : ""}${n.toFixed(2)}%` : String(value);
+/* ---------- format ---------- */
+function fmtVal(v) {
+  if (v == null || v === "") return "--";
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(2) : String(v);
+}
+function fmtPct(v) {
+  if (v == null || v === "") return "--";
+  const n = Number(v);
+  return Number.isFinite(n) ? (n > 0 ? "+" : "") + n.toFixed(2) + "%" : String(v);
 }
 
-/* ---------- recent stocks ---------- */
+/* ---------- recent ---------- */
 function addRecent(input) {
-  let recents = JSON.parse(localStorage.getItem("trading_agent_recent") || "[]");
-  recents = [input, ...recents.filter((t) => t !== input)].slice(0, 5);
-  localStorage.setItem("trading_agent_recent", JSON.stringify(recents));
-  renderRecents();
+  let recents = JSON.parse(localStorage.getItem("ta_rc") || "[]");
+  recents = [input, ...recents.filter(t => t !== input)].slice(0, 5);
+  localStorage.setItem("ta_rc", JSON.stringify(recents));
+  renderRecent();
 }
 
-function renderRecents() {
-  const recents = JSON.parse(localStorage.getItem("trading_agent_recent") || "[]");
-  if (recents.length === 0) {
-    recentContainer.classList.add("hidden");
-    return;
-  }
+function renderRecent() {
+  const recents = JSON.parse(localStorage.getItem("ta_rc") || "[]");
+  if (!recents.length) { recentContainer.classList.add("hidden"); return; }
   recentContainer.classList.remove("hidden");
   recentList.innerHTML = "";
-  recents.forEach((input) => {
-    const tag = document.createElement("button");
-    tag.className = "recent-tag";
-    tag.textContent = input;
-    tag.addEventListener("click", () => {
-      tickerInput.value = input;
-      form.requestSubmit();
-    });
+  recents.forEach(r => {
+    const tag = Object.assign(document.createElement("button"), { className:"recent-tag", textContent:r });
+    tag.addEventListener("click", () => { input.value = r; form.requestSubmit(); });
     recentList.appendChild(tag);
   });
 }
-
-renderRecents();
+renderRecent();
 
 /* ---------- history ---------- */
-historyToggle.addEventListener("click", async () => {
-  if (historyToggle.textContent === "展开") {
-    historyToggle.textContent = "加载中...";
-    historyToggle.disabled = true;
+historyBtn.addEventListener("click", async () => {
+  if (historyBtn.textContent === "展开") {
+    historyBtn.textContent = "加载中...";
+    historyBtn.disabled = true;
     await loadHistory();
-    historyToggle.textContent = "收起";
-    historyToggle.disabled = false;
+    historyBtn.textContent = "收起";
+    historyBtn.disabled = false;
     historyPanel.classList.remove("hidden");
   } else {
     historyPanel.classList.add("hidden");
-    historyToggle.textContent = "展开";
+    historyBtn.textContent = "展开";
   }
 });
 
 async function loadHistory() {
-  let resp;
   try {
-    resp = await fetch("/api/history", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ limit: 20 }),
+    const r = await fetch("/api/history", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({limit:20}) });
+    if (!r.ok) throw Error();
+    const d = await r.json();
+    const items = d.history || [];
+    if (!items.length) { historyPanel.innerHTML = '<div class="hint">暂无记录</div>'; return; }
+    historyPanel.innerHTML = "";
+    items.forEach(item => {
+      const div = document.createElement("div");
+      div.className = "history-item";
+      div.innerHTML = '<span class="history-item-code">' + item.ticker + '</span><span class="history-item-name">' + (item.ticker_name || "") + '</span><span class="history-item-time">' + (item.created_at ? item.created_at.slice(0,16) : "") + '</span>';
+      div.addEventListener("click", () => loadDetail(item.id));
+      historyPanel.appendChild(div);
     });
-  } catch (e) {
-    historyPanel.innerHTML = '<div class="hint" style="padding:8px">无法加载历史记录</div>';
-    return;
-  }
-  if (!resp.ok) {
-    historyPanel.innerHTML = '<div class="hint" style="padding:8px">加载失败</div>';
-    return;
-  }
-  const data = await resp.json();
-  const items = data.history || [];
-  if (items.length === 0) {
-    historyPanel.innerHTML = '<div class="hint" style="padding:8px">暂无历史记录</div>';
-    return;
-  }
-  historyPanel.innerHTML = "";
-  items.forEach((item) => {
-    const div = document.createElement("div");
-    div.className = "history-item";
-    div.innerHTML = `
-      <span class="history-item-ticker">${item.ticker}</span>
-      <span class="history-item-name">${item.ticker_name || ""}</span>
-      <span class="history-item-time">${item.created_at ? item.created_at.slice(0, 16) : ""}</span>
-    `;
-    div.addEventListener("click", () => loadHistoryDetail(item.id));
-    historyPanel.appendChild(div);
-  });
+  } catch { historyPanel.innerHTML = '<div class="hint">加载失败</div>'; }
 }
 
-async function loadHistoryDetail(id) {
-  let resp;
+async function loadDetail(id) {
   try {
-    resp = await fetch(`/api/history/${id}`, { method: "POST" });
-  } catch (e) {
-    showToast("加载历史详情失败", "error");
-    return;
-  }
-  if (!resp.ok) return;
-  const data = await resp.json();
-  if (data.state) {
-    renderResult(data.state);
-    setBadge("完成", "done");
-    statusDot.className = "dot";
-    statusText.textContent = "就绪";
-    showToast("已加载历史分析", "success");
-    hideSkeleton();
-    setRunning(false);
-  }
+    const r = await fetch("/api/history/" + id, { method:"POST" });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.state) {
+      renderResult(d.state);
+      setBadge("完成", "done");
+      statusDot.className = "dot";
+      statusText.textContent = "就绪";
+      showToast("已加载历史", "succ");
+      hideSkel();
+      setBusy(false);
+      showResult();
+    }
+  } catch { showToast("加载失败", "err"); }
 }
+
+/* ---------- settings ---------- */
+const settingsBtn = $("#settingsBtn");
+const settingsPanel = $("#settingsPanel");
+const sBaseUrl = $("#sBaseUrl");
+const sModel = $("#sModel");
+const sQuick = $("#sQuick");
+const sApiKey = $("#sApiKey");
+const saveSettings = $("#saveSettings");
+const settingsStatus = $("#settingsStatus");
+
+settingsBtn.addEventListener("click", async () => {
+  if (settingsBtn.textContent === "展开") {
+    settingsBtn.textContent = "加载中...";
+    settingsBtn.disabled = true;
+    try {
+      const r = await fetch("/api/settings");
+      const d = await r.json();
+      sBaseUrl.value = d.file_config.base_url || "";
+      sModel.value = d.file_config.model || "";
+      sQuick.value = d.file_config.quick_model || "";
+      sApiKey.value = d.file_config.api_key || "";
+      settingsStatus.textContent = "当前: " + d.model + " | " + d.base_url;
+    } catch { settingsStatus.textContent = "加载失败"; }
+    settingsBtn.textContent = "收起";
+    settingsBtn.disabled = false;
+    settingsPanel.classList.remove("hidden");
+  } else {
+    settingsPanel.classList.add("hidden");
+    settingsBtn.textContent = "展开";
+  }
+});
+
+saveSettings.addEventListener("click", async () => {
+  const body = {};
+  if (sBaseUrl.value.trim()) body.base_url = sBaseUrl.value.trim();
+  if (sModel.value.trim()) body.model = sModel.value.trim();
+  if (sQuick.value.trim()) body.quick_model = sQuick.value.trim();
+  if (sApiKey.value.trim()) body.api_key = sApiKey.value.trim();
+  try {
+    const r = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    settingsStatus.textContent = d.status === "saved"
+      ? "✅ 已保存，正在重启..." : "❌ " + (d.error || "保存失败");
+    if (d.status === "saved") {
+      // Trigger server restart
+      setTimeout(() => location.reload(), 2000);
+    }
+  } catch (e) {
+    settingsStatus.textContent = "❌ " + e.message;
+  }
+});
+
+/* ---------- init ---------- */
+hideResult();

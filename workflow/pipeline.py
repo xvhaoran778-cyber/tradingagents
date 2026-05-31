@@ -1,3 +1,4 @@
+import sys
 from llm.client import LLMClient
 from workflow.state import AgentState, DebateRound, RiskAssessment
 from agents.analysts.technical import TechnicalAnalyst, SentimentAnalyst, NewsAnalyst, FundamentalAnalyst
@@ -11,10 +12,19 @@ from agents.risk.neutral import NeutralRisk
 from agents.portfolio_manager import PortfolioManager
 from data.market import get_kline_data, get_technical_indicators, get_industry, get_stock_name
 from data.realtime import get_realtime_quote
-from data.news import get_all_news
-from data.fundamentals import get_financial_data
+from data.news import get_all_news, get_global_news
+from data.fundamentals import get_financial_data, get_f10_data, get_sina_financial_statements
+from data.signals import (get_money_flow_minute, get_money_flow_120d, get_margin,
+    get_block_trade, get_research_reports, get_dragon_tiger, get_lockup_expiry,
+    get_industry_comparison, get_baidu_kline, get_holder_count, get_dividend_history,
+    get_concept_blocks, get_northbound_realtime, get_hot_stocks)
+from data.filings import get_cninfo_announcements, get_f10_latest_notice
 from memory.logger import log_decision, get_past_context
 from config import MAX_DEBATE_ROUNDS
+
+
+def _log(msg):
+    print(f"[PIPELINE] {msg}", file=sys.stderr, flush=True)
 
 
 class TradingPipeline:
@@ -48,8 +58,31 @@ class TradingPipeline:
         state.raw_data["indicators"] = get_technical_indicators(state.raw_data["kline"])
         state.raw_data["realtime"] = get_realtime_quote(ticker)
         state.raw_data["news"] = get_all_news(ticker)
+        state.raw_data["global_news"] = get_global_news()
         state.raw_data["fundamentals"] = get_financial_data(ticker)
+        state.raw_data["f10"] = get_f10_data(ticker)
+        state.raw_data["sina_statements"] = get_sina_financial_statements(ticker)
         state.raw_data["past_context"] = get_past_context(ticker)
+
+        # 信号层 + 资金面
+        state.raw_data["money_flow"] = get_money_flow_minute(ticker)
+        state.raw_data["money_flow_120d"] = get_money_flow_120d(ticker)
+        state.raw_data["margin"] = get_margin(ticker)
+        state.raw_data["block_trade"] = get_block_trade(ticker)
+        state.raw_data["research_reports"] = get_research_reports(ticker)
+        state.raw_data["dragon_tiger"] = get_dragon_tiger(ticker)
+        state.raw_data["lockup"] = get_lockup_expiry(ticker)
+        state.raw_data["holder_count"] = get_holder_count(ticker)
+        state.raw_data["dividend"] = get_dividend_history(ticker)
+        state.raw_data["industry_rank"] = get_industry_comparison()
+        state.raw_data["concept_blocks"] = get_concept_blocks(ticker)
+        state.raw_data["northbound"] = get_northbound_realtime()
+        state.raw_data["hot_stocks"] = get_hot_stocks()
+        state.raw_data["baidu_kline"] = get_baidu_kline(ticker)
+
+        # 公告层
+        state.raw_data["announcements"] = get_cninfo_announcements(ticker)
+        state.raw_data["latest_notice"] = get_f10_latest_notice(ticker)
 
     def _phase_analysts(self, state: AgentState):
         for analyst in self.analysts:
@@ -86,9 +119,9 @@ class TradingPipeline:
                 assessment=assessment,
             ))
 
-    def _phase_portfolio_manager(self, state: AgentState):
+    def _phase_portfolio_manager(self, state: AgentState, on_progress=None):
         print("  🏛️ 投资组合经理做出最终决策...")
-        state.final_decision = self.pm.decide(state)
+        state.final_decision = self.pm.decide(state, on_progress=on_progress)
 
     def run(self, ticker: str, on_progress=None) -> AgentState:
         state = AgentState(ticker=ticker)
@@ -125,12 +158,17 @@ class TradingPipeline:
 
         if on_progress:
             on_progress("decision", "投资组合经理决策中...")
-        self._phase_portfolio_manager(state)
+        self._phase_portfolio_manager(state, on_progress=on_progress)
+        _log("_phase_portfolio_manager 完成")
         if on_progress:
             on_progress("decision", "最终决策完成")
 
+        _log("开始 log_decision")
         log_decision(state)
+        _log("log_decision 完成")
+
         if on_progress:
             on_progress("done", "分析完成")
+        _log("run() 返回 state")
 
         return state

@@ -1,14 +1,16 @@
+"""新闻层 — 新浪 + 东财个股新闻 + 东财全球资讯（从 SKILL.md 集成）"""
 import requests
-from lxml import etree
+import json
+import re
+from data.cache import cached
+from data.signals_utils import UA, em_get
 
 
+@cached(ttl=120)
 def get_sina_news(code: str, count: int = 10) -> list[dict]:
     try:
         url = f"https://searchapi.sina.com.cn/?c=news&q={code}&range=all&time=all&num={count}&site=finance&sort=time"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        headers = {"User-Agent": UA}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code != 200:
             return _fallback_news(code, count)
@@ -26,33 +28,69 @@ def get_sina_news(code: str, count: int = 10) -> list[dict]:
         return _fallback_news(code, count)
 
 
+@cached(ttl=120)
 def get_eastmoney_news(code: str, count: int = 10) -> list[dict]:
+    """东财个股新闻流 — 直连 search-api-web"""
     try:
-        sec_code = f"1.{_to_sec_code(code)}"
-        url = f"https://push2.eastmoney.com/api/qt/stock/get"
+        url = "https://search-api-web.eastmoney.com/search/jsonp"
         params = {
-            "secid": sec_code,
-            "fields": "f58,f152",
-            "invt": 2,
-            "fltt": 2,
+            "cb": "callback",
+            "param": f'{{"uid":"","keyword":"{code}","type":["cmsArticleWebOld"],"client":"web","clientType":"web","clientVersion":"curr"}}',
+            "page": 1,
+            "pageSize": count,
         }
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": UA,
+            "Referer": "https://so.eastmoney.com/",
+        }
+        resp = em_get(url, params=params, headers=headers, timeout=10)
+        text = resp.text.strip()
+        # strip jsonp wrapper
+        start = text.find("(")
+        end = text.rfind(")")
+        if start >= 0 and end > start:
+            text = text[start + 1:end]
+        data = json.loads(text)
+        # result.cmsArticleWebOld is directly a list
+        articles = data.get("result", {}).get("cmsArticleWebOld", []) or []
+        items = []
+        for item in articles[:count]:
+            items.append({
+                "title": re.sub(r"<[^>]+>", "", item.get("title", "")),
+                "summary": re.sub(r"<[^>]+>", "", item.get("summary", "") or ""),
+                "time": (item.get("date") or "")[:10],
+                "source": item.get("source", ""),
+            })
+        return items
+    except Exception:
+        return []
+
+
+@cached(ttl=120)
+def get_global_news(count: int = 20) -> list[dict]:
+    """东财全球财经资讯（7×24，替代已下线的财联社快讯）"""
+    try:
+        url = "https://np-weblist.eastmoney.com/comm/web/list"
+        params = {
+            "client": "web",
+            "biz": "global",
+            "type": "global",
+            "page": 1,
+            "size": count,
+        }
+        headers = {
+            "User-Agent": UA,
             "Referer": "https://finance.eastmoney.com/",
         }
-        news_url = f"https://so.eastmoney.com/news/s?keyword={code}&pageindex=1&pagesize={count}&searchrange=114"
-        resp = requests.get(news_url, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            return []
+        resp = em_get(url, params=params, headers=headers, timeout=10)
         data = resp.json()
         items = []
-        for item in data.get("Datas", [])[:count]:
+        for item in data.get("list", [])[:count]:
             items.append({
-                "title": item.get("Title", "").replace("<em>", "").replace("</em>", ""),
-                "summary": item.get("Summary", "").replace("<em>", "").replace("</em>", ""),
-                "time": item.get("ShowDate", ""),
-                "source": item.get("Source", ""),
+                "title": item.get("title", ""),
+                "time": (item.get("showDate") or "")[:10],
+                "content": item.get("content", ""),
+                "source": "东财全球资讯",
             })
         return items
     except Exception:
@@ -60,14 +98,11 @@ def get_eastmoney_news(code: str, count: int = 10) -> list[dict]:
 
 
 def _to_sec_code(code: str) -> str:
-    if code.startswith(("60", "68")):
-        return f"{code}"
-    return f"{code}"
+    return code
 
 
 def _fallback_news(code: str, count: int = 10) -> list[dict]:
     try:
-        import pandas as pd
         import yfinance as yf
         ticker = yf.Ticker(f"{code}.SS" if code.startswith(("60", "68")) else f"{code}.SZ")
         news = ticker.news[:count] if ticker.news else []
